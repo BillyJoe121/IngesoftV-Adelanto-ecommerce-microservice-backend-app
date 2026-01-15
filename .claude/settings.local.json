@@ -1,0 +1,16 @@
+{
+  "permissions": {
+    "allow": [
+      "Bash(java -version:*)",
+      "Bash(dir \"C:\\\\Program Files\\\\Eclipse Adoptium\")",
+      "Bash(dir \"C:\\\\Program Files\\\\Temurin\")",
+      "Bash(dir \"C:\\\\Program Files\\\\Java\")",
+      "Bash(curl:*)",
+      "Bash(timeout /t 15 /nobreak)",
+      "Bash(powershell -Command \"Start-Sleep -Seconds 15; curl -s http://localhost:8761/eureka/apps\")",
+      "Bash(powershell -Command \"Start-Sleep -Seconds 15; Invoke-RestMethod -Uri ''http://localhost:8761/eureka/apps'' -Method Get\")",
+      "Bash(docker logs:*)",
+      "Bash(powershell -Command \"Start-Sleep -Seconds 30; Invoke-RestMethod -Uri ''http://localhost:8761/eureka/apps'' -Method Get | Format-List\")"
+    ]
+  }
+}

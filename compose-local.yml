@@ -1,0 +1,165 @@
+networks:
+  ecommerce-network:
+    driver: bridge
+
+services:
+  zipkin-container:
+    image: openzipkin/zipkin
+    container_name: zipkin-container
+    ports:
+      - "9411:9411"
+    networks:
+      - ecommerce-network
+
+  service-discovery-container:
+    build:
+      context: ./service-discovery
+      dockerfile: Dockerfile
+    container_name: service-discovery-container
+    ports:
+      - "8761:8761"
+    environment:
+      - SPRING_PROFILES_ACTIVE=docker
+    networks:
+      - ecommerce-network
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:8761/actuator/health"]
+      interval: 30s
+      timeout: 10s
+      retries: 5
+      start_period: 40s
+
+  cloud-config-container:
+    build:
+      context: ./cloud-config
+      dockerfile: Dockerfile
+    container_name: cloud-config-container
+    ports:
+      - "9296:9296"
+    environment:
+      - SPRING_PROFILES_ACTIVE=docker
+    networks:
+      - ecommerce-network
+    depends_on:
+      service-discovery-container:
+        condition: service_healthy
+
+  api-gateway-container:
+    build:
+      context: ./api-gateway
+      dockerfile: Dockerfile
+    container_name: api-gateway-container
+    ports:
+      - "8080:8080"
+    environment:
+      - SPRING_PROFILES_ACTIVE=docker
+    networks:
+      - ecommerce-network
+    depends_on:
+      service-discovery-container:
+        condition: service_healthy
+
+  proxy-client-container:
+    build:
+      context: ./proxy-client
+      dockerfile: Dockerfile
+    container_name: proxy-client-container
+    ports:
+      - "8900:8900"
+    environment:
+      - SPRING_PROFILES_ACTIVE=docker
+    networks:
+      - ecommerce-network
+    depends_on:
+      service-discovery-container:
+        condition: service_healthy
+
+  user-service-container:
+    build:
+      context: ./user-service
+      dockerfile: Dockerfile
+    container_name: user-service-container
+    ports:
+      - "8700:8700"
+    environment:
+      - SPRING_PROFILES_ACTIVE=docker
+    networks:
+      - ecommerce-network
+    depends_on:
+      service-discovery-container:
+        condition: service_healthy
+
+  product-service-container:
+    build:
+      context: ./product-service
+      dockerfile: Dockerfile
+    container_name: product-service-container
+    ports:
+      - "8500:8500"
+    environment:
+      - SPRING_PROFILES_ACTIVE=docker
+    networks:
+      - ecommerce-network
+    depends_on:
+      service-discovery-container:
+        condition: service_healthy
+
+  order-service-container:
+    build:
+      context: ./order-service
+      dockerfile: Dockerfile
+    container_name: order-service-container
+    ports:
+      - "8300:8300"
+    environment:
+      - SPRING_PROFILES_ACTIVE=docker
+    networks:
+      - ecommerce-network
+    depends_on:
+      service-discovery-container:
+        condition: service_healthy
+
+  payment-service-container:
+    build:
+      context: ./payment-service
+      dockerfile: Dockerfile
+    container_name: payment-service-container
+    ports:
+      - "8400:8400"
+    environment:
+      - SPRING_PROFILES_ACTIVE=docker
+    networks:
+      - ecommerce-network
+    depends_on:
+      service-discovery-container:
+        condition: service_healthy
+
+  shipping-service-container:
+    build:
+      context: ./shipping-service
+      dockerfile: Dockerfile
+    container_name: shipping-service-container
+    ports:
+      - "8600:8600"
+    environment:
+      - SPRING_PROFILES_ACTIVE=docker
+    networks:
+      - ecommerce-network
+    depends_on:
+      service-discovery-container:
+        condition: service_healthy
+
+  favourite-service-container:
+    build:
+      context: ./favourite-service
+      dockerfile: Dockerfile
+    container_name: favourite-service-container
+    ports:
+      - "8800:8800"
+    environment:
+      - SPRING_PROFILES_ACTIVE=docker
+    networks:
+      - ecommerce-network
+    depends_on:
+      service-discovery-container:
+        condition: service_healthy

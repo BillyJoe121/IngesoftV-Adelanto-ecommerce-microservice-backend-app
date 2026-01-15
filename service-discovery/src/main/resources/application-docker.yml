@@ -1,0 +1,27 @@
+server:
+  port: 8761
+
+management:
+  endpoints:
+    web:
+      exposure:
+        include: "*"
+
+spring:
+  zipkin:
+    base-url: http://zipkin-container:9411/
+
+eureka:
+  client:
+    register-with-eureka: false
+    fetch-registry: false
+  server:
+    enable-self-preservation: false
+
+logging:
+  level:
+    org:
+      hibernate:
+        SQL: INFO
+      springframework:
+        web: INFO

@@ -1,0 +1,44 @@
+server:
+  port: 8700
+
+spring:
+  zipkin:
+    base-url: http://zipkin-container:9411/
+  config:
+    import: optional:configserver:http://cloud-config-container:9296
+  datasource:
+    url: jdbc:h2:mem:ecommerce_docker_db;DB_CLOSE_ON_EXIT=FALSE
+    username: sa
+    password:
+  jpa:
+    hibernate:
+      ddl-auto: update
+    properties:
+      hibernate:
+        dialect: org.hibernate.dialect.H2Dialect
+  h2:
+    console:
+      enabled: true
+      path: /h2-console
+
+eureka:
+  client:
+    service-url:
+      defaultZone: http://service-discovery-container:8761/eureka/
+    register-with-eureka: true
+    fetch-registry: true
+  instance:
+    hostname: user-service-container
+    prefer-ip-address: true
+
+management:
+  endpoints:
+    web:
+      exposure:
+        include: "*"
+
+logging:
+  level:
+    org:
+      springframework:
+        web: INFO
