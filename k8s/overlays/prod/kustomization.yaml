@@ -1,0 +1,51 @@
+apiVersion: kustomize.config.k8s.io/v1beta1
+kind: Kustomization
+
+namespace: ecommerce-prod
+
+resources:
+  - ../../base
+
+labels:
+  - pairs:
+      environment: production
+    includeSelectors: true
+
+# Configuración específica para producción - más réplicas y recursos
+replicas:
+  - name: service-discovery
+    count: 2
+  - name: cloud-config
+    count: 2
+  - name: api-gateway
+    count: 3
+  - name: user-service
+    count: 3
+  - name: product-service
+    count: 3
+  - name: order-service
+    count: 3
+  - name: payment-service
+    count: 3
+  - name: shipping-service
+    count: 2
+  - name: favourite-service
+    count: 2
+
+# Patches para aumentar recursos en producción
+patches:
+  - patch: |-
+      - op: replace
+        path: /spec/template/spec/containers/0/resources/requests/memory
+        value: "512Mi"
+      - op: replace
+        path: /spec/template/spec/containers/0/resources/limits/memory
+        value: "1Gi"
+      - op: replace
+        path: /spec/template/spec/containers/0/resources/requests/cpu
+        value: "500m"
+      - op: replace
+        path: /spec/template/spec/containers/0/resources/limits/cpu
+        value: "1000m"
+    target:
+      kind: Deployment
