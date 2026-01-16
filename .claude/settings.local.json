@@ -10,7 +10,16 @@
       "Bash(powershell -Command \"Start-Sleep -Seconds 15; curl -s http://localhost:8761/eureka/apps\")",
       "Bash(powershell -Command \"Start-Sleep -Seconds 15; Invoke-RestMethod -Uri ''http://localhost:8761/eureka/apps'' -Method Get\")",
       "Bash(docker logs:*)",
-      "Bash(powershell -Command \"Start-Sleep -Seconds 30; Invoke-RestMethod -Uri ''http://localhost:8761/eureka/apps'' -Method Get | Format-List\")"
+      "Bash(powershell -Command \"Start-Sleep -Seconds 30; Invoke-RestMethod -Uri ''http://localhost:8761/eureka/apps'' -Method Get | Format-List\")",
+      "Bash(mvn test:*)",
+      "Bash(git add:*)",
+      "Bash(git commit -m \"$\\(cat <<''EOF''\nfeat: add unit tests for all 6 microservices with JaCoCo coverage\n\n- Add 84 unit tests across all microservices:\n  * user-service: 23 tests \\(UserService, CredentialService, AddressService\\)\n  * product-service: 20 tests \\(ProductService, CategoryService\\)\n  * order-service: 16 tests \\(OrderService, CartService\\)\n  * favourite-service: 9 tests \\(FavouriteService\\)\n  * shipping-service: 8 tests \\(OrderItemService\\)\n  * payment-service: 8 tests \\(PaymentService\\)\n- Configure JaCoCo plugin in parent pom.xml for code coverage reports\n- All tests use JUnit 5 with Mockito for mocking\n\nCo-Authored-By: Claude Opus 4.5 <noreply@anthropic.com>\nEOF\n\\)\")",
+      "Bash(docker-compose up:*)",
+      "Bash(docker rm:*)",
+      "Bash(docker exec:*)",
+      "Bash(docker restart:*)",
+      "Bash(docker stop:*)",
+      "Bash(docker volume rm:*)"
     ]
   }
 }

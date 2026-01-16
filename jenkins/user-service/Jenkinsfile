@@ -1,0 +1,105 @@
+pipeline {
+    agent any
+
+    tools {
+        maven 'Maven'
+    }
+
+    environment {
+        SERVICE_NAME = 'user-service'
+        SERVICE_PORT = '8700'
+        DOCKER_NAMESPACE = 'ecommerce-microservices'
+        PROJECT_VERSION = '0.1.0'
+    }
+
+    parameters {
+        booleanParam(name: 'SKIP_DOCKER_PUSH', defaultValue: true, description: 'Skip pushing Docker images to registry')
+    }
+
+    stages {
+        stage('Checkout') {
+            steps {
+                checkout scm
+                script {
+                    env.GIT_COMMIT_SHORT = sh(script: "git rev-parse --short HEAD", returnStdout: true).trim()
+                    env.BUILD_TIMESTAMP = sh(script: "date +%Y%m%d-%H%M%S", returnStdout: true).trim()
+                }
+                echo "Building ${SERVICE_NAME} - Commit: ${env.GIT_COMMIT_SHORT}"
+            }
+        }
+
+        stage('Build') {
+            steps {
+                dir("${SERVICE_NAME}") {
+                    sh 'mvn clean compile -DskipTests'
+                }
+            }
+        }
+
+        stage('Unit Tests') {
+            steps {
+                dir("${SERVICE_NAME}") {
+                    sh 'mvn test'
+                }
+            }
+            post {
+                always {
+                    junit allowEmptyResults: true, testResults: "${SERVICE_NAME}/target/surefire-reports/*.xml"
+                }
+            }
+        }
+
+        stage('Package') {
+            steps {
+                dir("${SERVICE_NAME}") {
+                    sh 'mvn package -DskipTests'
+                }
+            }
+            post {
+                success {
+                    archiveArtifacts artifacts: "${SERVICE_NAME}/target/*.jar", fingerprint: true, allowEmptyArchive: true
+                }
+            }
+        }
+
+        stage('Docker Build') {
+            steps {
+                dir("${SERVICE_NAME}") {
+                    sh """
+                        docker build \
+                            --build-arg PROJECT_VERSION=${PROJECT_VERSION} \
+                            -t ${DOCKER_NAMESPACE}/${SERVICE_NAME}:${env.GIT_COMMIT_SHORT} \
+                            -t ${DOCKER_NAMESPACE}/${SERVICE_NAME}:dev-latest \
+                            .
+                    """
+                }
+            }
+        }
+
+        stage('Push to Registry') {
+            when {
+                expression { return !params.SKIP_DOCKER_PUSH }
+            }
+            steps {
+                script {
+                    withCredentials([usernamePassword(credentialsId: 'docker-credentials', usernameVariable: 'DOCKER_USER', passwordVariable: 'DOCKER_PASS')]) {
+                        sh 'echo $DOCKER_PASS | docker login -u $DOCKER_USER --password-stdin'
+                        sh """
+                            docker push ${DOCKER_NAMESPACE}/${SERVICE_NAME}:${env.GIT_COMMIT_SHORT}
+                            docker push ${DOCKER_NAMESPACE}/${SERVICE_NAME}:dev-latest
+                        """
+                    }
+                }
+            }
+        }
+    }
+
+    post {
+        success {
+            echo "SUCCESS: ${SERVICE_NAME} pipeline completed - Commit: ${env.GIT_COMMIT_SHORT}"
+        }
+        failure {
+            echo "FAILURE: ${SERVICE_NAME} pipeline failed - Commit: ${env.GIT_COMMIT_SHORT}"
+        }
+    }
+}

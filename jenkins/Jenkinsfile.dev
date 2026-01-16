@@ -1,0 +1,331 @@
+// Orchestrator Pipeline for DEV Environment
+// Builds all microservices in the correct dependency order
+
+pipeline {
+    agent any
+
+    tools {
+        maven 'Maven'
+    }
+
+    environment {
+        DOCKER_NAMESPACE = 'ecommerce-microservices'
+        PROJECT_VERSION = '0.1.0'
+        KUBE_NAMESPACE = 'ecommerce-dev'
+    }
+
+    options {
+        buildDiscarder(logRotator(numToKeepStr: '10'))
+        timestamps()
+        timeout(time: 60, unit: 'MINUTES')
+    }
+
+    stages {
+        stage('Checkout') {
+            steps {
+                checkout scm
+                script {
+                    env.GIT_COMMIT_SHORT = sh(script: "git rev-parse --short HEAD", returnStdout: true).trim()
+                    env.GIT_COMMIT_MSG = sh(script: "git log -1 --pretty=%B", returnStdout: true).trim()
+                    env.GIT_AUTHOR = sh(script: "git log -1 --pretty=%an", returnStdout: true).trim()
+                    env.BUILD_TIMESTAMP = sh(script: "date +%Y%m%d-%H%M%S", returnStdout: true).trim()
+                }
+                echo "=========================================="
+                echo "DEV Environment Build"
+                echo "Commit: ${env.GIT_COMMIT_SHORT}"
+                echo "Author: ${env.GIT_AUTHOR}"
+                echo "Message: ${env.GIT_COMMIT_MSG}"
+                echo "=========================================="
+            }
+        }
+
+        // Stage 1: Infrastructure Services (no dependencies)
+        stage('Build Infrastructure Services') {
+            parallel {
+                stage('service-discovery') {
+                    steps {
+                        dir('service-discovery') {
+                            sh 'mvn clean compile package -DskipTests'
+                            sh """
+                                docker build \
+                                    --build-arg PROJECT_VERSION=${PROJECT_VERSION} \
+                                    -t ${DOCKER_NAMESPACE}/service-discovery:${env.GIT_COMMIT_SHORT} \
+                                    -t ${DOCKER_NAMESPACE}/service-discovery:dev-latest \
+                                    .
+                            """
+                        }
+                    }
+                }
+                stage('cloud-config') {
+                    steps {
+                        dir('cloud-config') {
+                            sh 'mvn clean compile package -DskipTests'
+                            sh """
+                                docker build \
+                                    --build-arg PROJECT_VERSION=${PROJECT_VERSION} \
+                                    -t ${DOCKER_NAMESPACE}/cloud-config:${env.GIT_COMMIT_SHORT} \
+                                    -t ${DOCKER_NAMESPACE}/cloud-config:dev-latest \
+                                    .
+                            """
+                        }
+                    }
+                }
+            }
+        }
+
+        // Stage 2: Gateway and Proxy (depend on discovery)
+        stage('Build Gateway Services') {
+            parallel {
+                stage('api-gateway') {
+                    steps {
+                        dir('api-gateway') {
+                            sh 'mvn clean compile package -DskipTests'
+                            sh """
+                                docker build \
+                                    --build-arg PROJECT_VERSION=${PROJECT_VERSION} \
+                                    -t ${DOCKER_NAMESPACE}/api-gateway:${env.GIT_COMMIT_SHORT} \
+                                    -t ${DOCKER_NAMESPACE}/api-gateway:dev-latest \
+                                    .
+                            """
+                        }
+                    }
+                }
+                stage('proxy-client') {
+                    steps {
+                        dir('proxy-client') {
+                            sh 'mvn clean compile package -DskipTests'
+                            sh """
+                                docker build \
+                                    --build-arg PROJECT_VERSION=${PROJECT_VERSION} \
+                                    -t ${DOCKER_NAMESPACE}/proxy-client:${env.GIT_COMMIT_SHORT} \
+                                    -t ${DOCKER_NAMESPACE}/proxy-client:dev-latest \
+                                    .
+                            """
+                        }
+                    }
+                }
+            }
+        }
+
+        // Stage 3: Business Microservices (with tests)
+        stage('Build & Test Business Services') {
+            parallel {
+                stage('user-service') {
+                    steps {
+                        dir('user-service') {
+                            sh 'mvn clean test'
+                            sh 'mvn package -DskipTests'
+                            sh """
+                                docker build \
+                                    --build-arg PROJECT_VERSION=${PROJECT_VERSION} \
+                                    -t ${DOCKER_NAMESPACE}/user-service:${env.GIT_COMMIT_SHORT} \
+                                    -t ${DOCKER_NAMESPACE}/user-service:dev-latest \
+                                    .
+                            """
+                        }
+                    }
+                    post {
+                        always {
+                            junit allowEmptyResults: true, testResults: 'user-service/target/surefire-reports/*.xml'
+                        }
+                    }
+                }
+                stage('product-service') {
+                    steps {
+                        dir('product-service') {
+                            sh 'mvn clean test'
+                            sh 'mvn package -DskipTests'
+                            sh """
+                                docker build \
+                                    --build-arg PROJECT_VERSION=${PROJECT_VERSION} \
+                                    -t ${DOCKER_NAMESPACE}/product-service:${env.GIT_COMMIT_SHORT} \
+                                    -t ${DOCKER_NAMESPACE}/product-service:dev-latest \
+                                    .
+                            """
+                        }
+                    }
+                    post {
+                        always {
+                            junit allowEmptyResults: true, testResults: 'product-service/target/surefire-reports/*.xml'
+                        }
+                    }
+                }
+                stage('order-service') {
+                    steps {
+                        dir('order-service') {
+                            sh 'mvn clean test'
+                            sh 'mvn package -DskipTests'
+                            sh """
+                                docker build \
+                                    --build-arg PROJECT_VERSION=${PROJECT_VERSION} \
+                                    -t ${DOCKER_NAMESPACE}/order-service:${env.GIT_COMMIT_SHORT} \
+                                    -t ${DOCKER_NAMESPACE}/order-service:dev-latest \
+                                    .
+                            """
+                        }
+                    }
+                    post {
+                        always {
+                            junit allowEmptyResults: true, testResults: 'order-service/target/surefire-reports/*.xml'
+                        }
+                    }
+                }
+                stage('payment-service') {
+                    steps {
+                        dir('payment-service') {
+                            sh 'mvn clean test'
+                            sh 'mvn package -DskipTests'
+                            sh """
+                                docker build \
+                                    --build-arg PROJECT_VERSION=${PROJECT_VERSION} \
+                                    -t ${DOCKER_NAMESPACE}/payment-service:${env.GIT_COMMIT_SHORT} \
+                                    -t ${DOCKER_NAMESPACE}/payment-service:dev-latest \
+                                    .
+                            """
+                        }
+                    }
+                    post {
+                        always {
+                            junit allowEmptyResults: true, testResults: 'payment-service/target/surefire-reports/*.xml'
+                        }
+                    }
+                }
+                stage('shipping-service') {
+                    steps {
+                        dir('shipping-service') {
+                            sh 'mvn clean test'
+                            sh 'mvn package -DskipTests'
+                            sh """
+                                docker build \
+                                    --build-arg PROJECT_VERSION=${PROJECT_VERSION} \
+                                    -t ${DOCKER_NAMESPACE}/shipping-service:${env.GIT_COMMIT_SHORT} \
+                                    -t ${DOCKER_NAMESPACE}/shipping-service:dev-latest \
+                                    .
+                            """
+                        }
+                    }
+                    post {
+                        always {
+                            junit allowEmptyResults: true, testResults: 'shipping-service/target/surefire-reports/*.xml'
+                        }
+                    }
+                }
+                stage('favourite-service') {
+                    steps {
+                        dir('favourite-service') {
+                            sh 'mvn clean test'
+                            sh 'mvn package -DskipTests'
+                            sh """
+                                docker build \
+                                    --build-arg PROJECT_VERSION=${PROJECT_VERSION} \
+                                    -t ${DOCKER_NAMESPACE}/favourite-service:${env.GIT_COMMIT_SHORT} \
+                                    -t ${DOCKER_NAMESPACE}/favourite-service:dev-latest \
+                                    .
+                            """
+                        }
+                    }
+                    post {
+                        always {
+                            junit allowEmptyResults: true, testResults: 'favourite-service/target/surefire-reports/*.xml'
+                        }
+                    }
+                }
+            }
+        }
+
+        // Stage 4: Generate Coverage Reports
+        stage('Coverage Reports') {
+            steps {
+                sh 'mvn jacoco:report -pl user-service,product-service,order-service,payment-service,shipping-service,favourite-service'
+            }
+            post {
+                always {
+                    jacoco(
+                        execPattern: '**/target/jacoco.exec',
+                        classPattern: '**/target/classes',
+                        sourcePattern: '**/src/main/java',
+                        exclusionPattern: '**/test/**'
+                    )
+                }
+            }
+        }
+
+        // Stage 5: Push Docker Images
+        stage('Push Docker Images') {
+            steps {
+                script {
+                    withCredentials([usernamePassword(credentialsId: 'docker-credentials', usernameVariable: 'DOCKER_USER', passwordVariable: 'DOCKER_PASS')]) {
+                        sh 'echo $DOCKER_PASS | docker login -u $DOCKER_USER --password-stdin'
+
+                        def services = [
+                            'service-discovery',
+                            'cloud-config',
+                            'api-gateway',
+                            'proxy-client',
+                            'user-service',
+                            'product-service',
+                            'order-service',
+                            'payment-service',
+                            'shipping-service',
+                            'favourite-service'
+                        ]
+
+                        services.each { service ->
+                            sh """
+                                docker push ${DOCKER_NAMESPACE}/${service}:${env.GIT_COMMIT_SHORT}
+                                docker push ${DOCKER_NAMESPACE}/${service}:dev-latest
+                            """
+                        }
+                    }
+                }
+            }
+        }
+
+        // Stage 6: Deploy to Kubernetes DEV
+        stage('Deploy to Kubernetes') {
+            steps {
+                script {
+                    withKubeConfig([credentialsId: 'kubeconfig-credentials']) {
+                        sh """
+                            echo "Deploying to ${KUBE_NAMESPACE}..."
+                            kubectl apply -k k8s/overlays/dev/
+
+                            echo "Waiting for deployments to be ready..."
+                            kubectl rollout status deployment -n ${KUBE_NAMESPACE} --timeout=300s || true
+
+                            echo "Current pod status:"
+                            kubectl get pods -n ${KUBE_NAMESPACE}
+                        """
+                    }
+                }
+            }
+        }
+    }
+
+    post {
+        always {
+            // Archive test results
+            junit allowEmptyResults: true, testResults: '**/target/surefire-reports/*.xml'
+
+            // Archive JARs
+            archiveArtifacts artifacts: '**/target/*.jar', fingerprint: true, allowEmptyArchive: true
+        }
+        success {
+            echo "=========================================="
+            echo "DEV Build SUCCESS"
+            echo "Commit: ${env.GIT_COMMIT_SHORT}"
+            echo "All services built and deployed to ${KUBE_NAMESPACE}"
+            echo "=========================================="
+        }
+        failure {
+            echo "=========================================="
+            echo "DEV Build FAILED"
+            echo "Commit: ${env.GIT_COMMIT_SHORT}"
+            echo "Check logs for details"
+            echo "=========================================="
+        }
+        cleanup {
+            cleanWs()
+        }
+    }
+}

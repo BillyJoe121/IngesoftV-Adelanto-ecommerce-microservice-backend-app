@@ -1,0 +1,117 @@
+// Base Jenkinsfile template for microservices
+// This file contains shared pipeline logic for all services
+
+def call(Map config) {
+    pipeline {
+        agent any
+
+        tools {
+            maven 'Maven'
+            jdk 'JDK11'
+        }
+
+        environment {
+            SERVICE_NAME = config.serviceName
+            SERVICE_PORT = config.servicePort
+            DOCKER_REGISTRY = credentials('docker-registry-url') ?: 'docker.io'
+            DOCKER_NAMESPACE = 'ecommerce-microservices'
+            PROJECT_VERSION = '0.1.0'
+        }
+
+        stages {
+            stage('Checkout') {
+                steps {
+                    checkout scm
+                    script {
+                        env.GIT_COMMIT_SHORT = sh(script: "git rev-parse --short HEAD", returnStdout: true).trim()
+                        env.BUILD_TIMESTAMP = sh(script: "date +%Y%m%d-%H%M%S", returnStdout: true).trim()
+                    }
+                    echo "Building ${SERVICE_NAME} - Commit: ${env.GIT_COMMIT_SHORT}"
+                }
+            }
+
+            stage('Build') {
+                steps {
+                    dir(SERVICE_NAME) {
+                        sh 'mvn clean compile -DskipTests'
+                    }
+                }
+            }
+
+            stage('Unit Tests') {
+                steps {
+                    dir(SERVICE_NAME) {
+                        sh 'mvn test'
+                    }
+                }
+                post {
+                    always {
+                        junit allowEmptyResults: true, testResults: "${SERVICE_NAME}/target/surefire-reports/*.xml"
+                        jacoco(
+                            execPattern: "${SERVICE_NAME}/target/jacoco.exec",
+                            classPattern: "${SERVICE_NAME}/target/classes",
+                            sourcePattern: "${SERVICE_NAME}/src/main/java"
+                        )
+                    }
+                }
+            }
+
+            stage('Package') {
+                steps {
+                    dir(SERVICE_NAME) {
+                        sh 'mvn package -DskipTests'
+                    }
+                }
+                post {
+                    success {
+                        archiveArtifacts artifacts: "${SERVICE_NAME}/target/*.jar", fingerprint: true
+                    }
+                }
+            }
+
+            stage('Docker Build') {
+                steps {
+                    dir(SERVICE_NAME) {
+                        sh """
+                            docker build \
+                                --build-arg PROJECT_VERSION=${PROJECT_VERSION} \
+                                -t ${DOCKER_NAMESPACE}/${SERVICE_NAME}:${env.GIT_COMMIT_SHORT} \
+                                -t ${DOCKER_NAMESPACE}/${SERVICE_NAME}:dev-latest \
+                                .
+                        """
+                    }
+                }
+            }
+
+            stage('Push to Registry') {
+                steps {
+                    script {
+                        withCredentials([usernamePassword(credentialsId: 'docker-credentials', usernameVariable: 'DOCKER_USER', passwordVariable: 'DOCKER_PASS')]) {
+                            sh '''
+                                echo $DOCKER_PASS | docker login -u $DOCKER_USER --password-stdin
+                            '''
+                            sh """
+                                docker push ${DOCKER_NAMESPACE}/${SERVICE_NAME}:${env.GIT_COMMIT_SHORT}
+                                docker push ${DOCKER_NAMESPACE}/${SERVICE_NAME}:dev-latest
+                            """
+                        }
+                    }
+                }
+            }
+        }
+
+        post {
+            always {
+                cleanWs()
+            }
+            success {
+                echo "SUCCESS: ${SERVICE_NAME} build completed - ${env.GIT_COMMIT_SHORT}"
+            }
+            failure {
+                echo "FAILURE: ${SERVICE_NAME} build failed - ${env.GIT_COMMIT_SHORT}"
+            }
+        }
+    }
+}
+
+return this
