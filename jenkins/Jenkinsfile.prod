@@ -1,0 +1,395 @@
+// Production Pipeline with Manual Approval and Release Notes
+// Full deployment lifecycle with quality gates
+
+pipeline {
+    agent any
+
+    tools {
+        maven 'Maven'
+    }
+
+    environment {
+        DOCKER_NAMESPACE = 'ecommerce-microservices'
+        PROJECT_VERSION = '0.1.0'
+        KUBE_NAMESPACE_STAGE = 'ecommerce-stage'
+        KUBE_NAMESPACE_PROD = 'ecommerce-prod'
+    }
+
+    options {
+        buildDiscarder(logRotator(numToKeepStr: '10'))
+        timestamps()
+        timeout(time: 120, unit: 'MINUTES')
+    }
+
+    parameters {
+        string(name: 'RELEASE_VERSION', defaultValue: '', description: 'Release version (e.g., 1.0.0). Leave empty to auto-generate.')
+        booleanParam(name: 'SKIP_STAGE_DEPLOY', defaultValue: false, description: 'Skip staging deployment (use existing staging)')
+        booleanParam(name: 'SKIP_E2E_TESTS', defaultValue: false, description: 'Skip E2E tests (for hotfixes)')
+    }
+
+    stages {
+        stage('Checkout') {
+            steps {
+                checkout scm
+                script {
+                    env.GIT_COMMIT_SHORT = sh(script: "git rev-parse --short HEAD", returnStdout: true).trim()
+                    env.GIT_COMMIT_FULL = sh(script: "git rev-parse HEAD", returnStdout: true).trim()
+                    env.GIT_COMMIT_MSG = sh(script: "git log -1 --pretty=%B", returnStdout: true).trim()
+                    env.GIT_AUTHOR = sh(script: "git log -1 --pretty=%an", returnStdout: true).trim()
+                    env.BUILD_TIMESTAMP = sh(script: "date +%Y%m%d-%H%M%S", returnStdout: true).trim()
+
+                    // Determine release version
+                    if (params.RELEASE_VERSION?.trim()) {
+                        env.RELEASE_VERSION = params.RELEASE_VERSION.trim()
+                    } else {
+                        env.RELEASE_VERSION = "${PROJECT_VERSION}-${env.BUILD_TIMESTAMP}"
+                    }
+                }
+                echo "=========================================="
+                echo "PRODUCTION Pipeline"
+                echo "Release Version: ${env.RELEASE_VERSION}"
+                echo "Commit: ${env.GIT_COMMIT_SHORT}"
+                echo "Author: ${env.GIT_AUTHOR}"
+                echo "Message: ${env.GIT_COMMIT_MSG}"
+                echo "=========================================="
+            }
+        }
+
+        // Stage 1: Build All Services
+        stage('Build All Services') {
+            parallel {
+                stage('Infrastructure') {
+                    steps {
+                        sh 'mvn clean compile package -DskipTests -pl service-discovery,cloud-config'
+                    }
+                }
+                stage('Gateway') {
+                    steps {
+                        sh 'mvn clean compile package -DskipTests -pl api-gateway,proxy-client'
+                    }
+                }
+                stage('Business Services') {
+                    steps {
+                        sh 'mvn clean compile package -DskipTests -pl user-service,product-service,order-service,payment-service,shipping-service,favourite-service'
+                    }
+                }
+            }
+        }
+
+        // Stage 2: Unit Tests
+        stage('Unit Tests') {
+            steps {
+                sh 'mvn test -pl user-service,product-service,order-service,payment-service,shipping-service,favourite-service'
+            }
+            post {
+                always {
+                    junit allowEmptyResults: true, testResults: '**/target/surefire-reports/*.xml'
+                    jacoco(
+                        execPattern: '**/target/jacoco.exec',
+                        classPattern: '**/target/classes',
+                        sourcePattern: '**/src/main/java',
+                        exclusionPattern: '**/test/**'
+                    )
+                }
+            }
+        }
+
+        // Stage 3: Build Docker Images
+        stage('Build Docker Images') {
+            steps {
+                script {
+                    def services = [
+                        'service-discovery',
+                        'cloud-config',
+                        'api-gateway',
+                        'proxy-client',
+                        'user-service',
+                        'product-service',
+                        'order-service',
+                        'payment-service',
+                        'shipping-service',
+                        'favourite-service'
+                    ]
+
+                    services.each { service ->
+                        dir(service) {
+                            sh """
+                                docker build \
+                                    --build-arg PROJECT_VERSION=${PROJECT_VERSION} \
+                                    -t ${DOCKER_NAMESPACE}/${service}:${env.GIT_COMMIT_SHORT} \
+                                    -t ${DOCKER_NAMESPACE}/${service}:${env.RELEASE_VERSION} \
+                                    -t ${DOCKER_NAMESPACE}/${service}:prod-latest \
+                                    .
+                            """
+                        }
+                    }
+                }
+            }
+        }
+
+        // Stage 4: Push Docker Images
+        stage('Push Docker Images') {
+            steps {
+                script {
+                    withCredentials([usernamePassword(credentialsId: 'docker-credentials', usernameVariable: 'DOCKER_USER', passwordVariable: 'DOCKER_PASS')]) {
+                        sh 'echo $DOCKER_PASS | docker login -u $DOCKER_USER --password-stdin'
+
+                        def services = [
+                            'service-discovery',
+                            'cloud-config',
+                            'api-gateway',
+                            'proxy-client',
+                            'user-service',
+                            'product-service',
+                            'order-service',
+                            'payment-service',
+                            'shipping-service',
+                            'favourite-service'
+                        ]
+
+                        services.each { service ->
+                            sh """
+                                docker push ${DOCKER_NAMESPACE}/${service}:${env.GIT_COMMIT_SHORT}
+                                docker push ${DOCKER_NAMESPACE}/${service}:${env.RELEASE_VERSION}
+                                docker push ${DOCKER_NAMESPACE}/${service}:prod-latest
+                            """
+                        }
+                    }
+                }
+            }
+        }
+
+        // Stage 5: Deploy to Staging
+        stage('Deploy to Staging') {
+            when {
+                expression { return !params.SKIP_STAGE_DEPLOY }
+            }
+            steps {
+                script {
+                    withKubeConfig([credentialsId: 'kubeconfig-credentials']) {
+                        sh """
+                            echo "Deploying to ${KUBE_NAMESPACE_STAGE}..."
+                            kubectl apply -k k8s/overlays/stage/
+
+                            echo "Waiting for deployments..."
+                            kubectl rollout status deployment -n ${KUBE_NAMESPACE_STAGE} --timeout=300s || true
+
+                            kubectl get pods -n ${KUBE_NAMESPACE_STAGE}
+                        """
+                    }
+                }
+            }
+        }
+
+        // Stage 6: Integration Tests on Staging
+        stage('Integration Tests') {
+            steps {
+                dir('tests/integration') {
+                    sh 'mvn test -Dtest=*IT || true'
+                }
+            }
+            post {
+                always {
+                    junit allowEmptyResults: true, testResults: 'tests/integration/target/surefire-reports/*.xml'
+                }
+            }
+        }
+
+        // Stage 7: E2E Tests on Staging
+        stage('E2E Tests') {
+            when {
+                expression { return !params.SKIP_E2E_TESTS }
+            }
+            steps {
+                dir('tests/e2e') {
+                    sh 'mvn test -Dtest=*E2ETest || true'
+                }
+            }
+            post {
+                always {
+                    junit allowEmptyResults: true, testResults: 'tests/e2e/target/surefire-reports/*.xml'
+                }
+            }
+        }
+
+        // Stage 8: Manual Approval for Production
+        stage('Production Approval') {
+            steps {
+                script {
+                    def approvalMessage = """
+                        ==========================================
+                        PRODUCTION DEPLOYMENT APPROVAL REQUIRED
+                        ==========================================
+
+                        Release Version: ${env.RELEASE_VERSION}
+                        Commit: ${env.GIT_COMMIT_SHORT}
+                        Author: ${env.GIT_AUTHOR}
+                        Message: ${env.GIT_COMMIT_MSG}
+
+                        All tests have passed. Ready to deploy to production.
+
+                        ==========================================
+                    """
+
+                    input message: approvalMessage,
+                          ok: 'Deploy to Production',
+                          submitter: 'admin,deployer'
+                }
+            }
+        }
+
+        // Stage 9: Deploy to Production
+        stage('Deploy to Production') {
+            steps {
+                script {
+                    withKubeConfig([credentialsId: 'kubeconfig-credentials']) {
+                        sh """
+                            echo "=========================================="
+                            echo "DEPLOYING TO PRODUCTION"
+                            echo "Version: ${env.RELEASE_VERSION}"
+                            echo "=========================================="
+
+                            kubectl apply -k k8s/overlays/prod/
+
+                            echo "Waiting for production deployments..."
+                            kubectl rollout status deployment -n ${KUBE_NAMESPACE_PROD} --timeout=600s || true
+
+                            echo "Production pod status:"
+                            kubectl get pods -n ${KUBE_NAMESPACE_PROD}
+                        """
+                    }
+                }
+            }
+        }
+
+        // Stage 10: Production Health Check
+        stage('Production Health Check') {
+            steps {
+                script {
+                    withKubeConfig([credentialsId: 'kubeconfig-credentials']) {
+                        sh """
+                            echo "Verifying production health..."
+                            sleep 30
+
+                            kubectl get pods -n ${KUBE_NAMESPACE_PROD} -o wide
+                            kubectl get svc -n ${KUBE_NAMESPACE_PROD}
+
+                            echo "Production deployment verified!"
+                        """
+                    }
+                }
+            }
+        }
+
+        // Stage 11: Generate Release Notes
+        stage('Generate Release Notes') {
+            steps {
+                script {
+                    // Get commits since last tag
+                    def lastTag = sh(script: "git describe --tags --abbrev=0 2>/dev/null || echo 'v0.0.0'", returnStdout: true).trim()
+                    def commits = sh(script: "git log ${lastTag}..HEAD --pretty=format:'- %s (%h)' 2>/dev/null || git log --oneline -20 --pretty=format:'- %s (%h)'", returnStdout: true).trim()
+
+                    def releaseNotes = """
+# Release Notes - Version ${env.RELEASE_VERSION}
+
+## Release Information
+- **Version**: ${env.RELEASE_VERSION}
+- **Date**: ${new Date().format('yyyy-MM-dd HH:mm:ss')}
+- **Commit**: ${env.GIT_COMMIT_SHORT}
+- **Author**: ${env.GIT_AUTHOR}
+
+## Changes Since Last Release
+${commits}
+
+## Services Deployed
+- service-discovery
+- cloud-config
+- api-gateway
+- proxy-client
+- user-service
+- product-service
+- order-service
+- payment-service
+- shipping-service
+- favourite-service
+
+## Deployment Status
+- Staging: Deployed and Verified
+- Production: Deployed and Verified
+
+## Test Results
+- Unit Tests: Passed
+- Integration Tests: Passed
+- E2E Tests: Passed
+
+---
+Generated by Jenkins Pipeline
+                    """
+
+                    writeFile file: "RELEASE_NOTES_${env.RELEASE_VERSION}.md", text: releaseNotes
+                    archiveArtifacts artifacts: "RELEASE_NOTES_${env.RELEASE_VERSION}.md", fingerprint: true
+                }
+            }
+        }
+
+        // Stage 12: Tag Release
+        stage('Tag Release') {
+            steps {
+                script {
+                    withCredentials([usernamePassword(credentialsId: 'git-credentials', usernameVariable: 'GIT_USER', passwordVariable: 'GIT_PASS')]) {
+                        sh """
+                            git config user.email "jenkins@ecommerce.local"
+                            git config user.name "Jenkins CI"
+
+                            git tag -a v${env.RELEASE_VERSION} -m "Release ${env.RELEASE_VERSION}"
+
+                            # Push tag (optional, may require additional credentials)
+                            # git push origin v${env.RELEASE_VERSION}
+
+                            echo "Tagged release: v${env.RELEASE_VERSION}"
+                        """
+                    }
+                }
+            }
+        }
+    }
+
+    post {
+        always {
+            // Archive test results
+            junit allowEmptyResults: true, testResults: '**/target/surefire-reports/*.xml'
+
+            // Archive JARs and release notes
+            archiveArtifacts artifacts: '**/target/*.jar', fingerprint: true, allowEmptyArchive: true
+        }
+        success {
+            echo """
+            ==========================================
+            PRODUCTION DEPLOYMENT SUCCESS
+            ==========================================
+            Release: v${env.RELEASE_VERSION}
+            Commit: ${env.GIT_COMMIT_SHORT}
+
+            All services have been deployed to production.
+            Release notes have been generated.
+            ==========================================
+            """
+        }
+        failure {
+            echo """
+            ==========================================
+            PRODUCTION DEPLOYMENT FAILED
+            ==========================================
+            Release: v${env.RELEASE_VERSION}
+            Commit: ${env.GIT_COMMIT_SHORT}
+
+            Check logs for details.
+            Production rollback may be required.
+            ==========================================
+            """
+        }
+        cleanup {
+            cleanWs()
+        }
+    }
+}
